@@ -75,12 +75,14 @@ export function createBlinkServer(options: ServerOptions = {}) {
     server,
     host,
     port,
-    listen(): Promise<{ url: string }> {
+    listen(): Promise<{ url: string; port: number }> {
       return new Promise((resolveListen, rejectListen) => {
         server.once('error', rejectListen)
         server.listen(port, host, () => {
           server.off('error', rejectListen)
-          resolveListen({ url: `http://${host}:${port}` })
+          const address = server.address()
+          const actualPort = typeof address === 'object' && address ? address.port : port
+          resolveListen({ url: `http://${host}:${actualPort}`, port: actualPort })
         })
       })
     },
