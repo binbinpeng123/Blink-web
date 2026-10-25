@@ -1,0 +1,26 @@
+{
+  "name": "blink-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Blink 的浏览器端上传/下载测试台：浏览器内 SigV4 签名，零 BFF。",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "start": "node server/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/unit/*.test.ts",
+    "test:integration": "node --test test/integration/*.test.ts",
+    "test:e2e": "node test/e2e/run.ts",
+    "bench": "node scripts/bench.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "puppeteer-core": "^25.16.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
