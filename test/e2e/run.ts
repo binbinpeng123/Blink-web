@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { randomFillSync } from 'node:crypto'
+import { createHash, randomFillSync } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -48,6 +48,7 @@ let blink: BlinkInstance | undefined
 let app: ReturnType<typeof createBlinkServer> | undefined
 let browser: Browser | undefined
 let uploadTempPath: string | undefined
+let downloadDir: string | undefined
 
 try {
   blink = await startBlink()
@@ -55,6 +56,7 @@ try {
   const { url } = await app.listen()
   console.log(`e2e：Blink ${blink.endpoint} ← 代理 ${url}`)
   if (SCREENSHOT_DIR) await mkdir(SCREENSHOT_DIR, { recursive: true })
+  downloadDir = await mkdtemp(join(tmpdir(), 'blink-web-download-'))
 
   // 直连后端准备测试数据：浏览器只负责观察与操作
   const seed = new S3Client({
@@ -78,6 +80,18 @@ try {
     }
   })
   page.on('dialog', (dialog) => void dialog.accept())
+
+  // headless 无法弹系统保存对话框：隐藏 picker，让应用走 Blob 回退，
+  // 再由 CDP 把下载落到临时目录，最后比对文件内容。
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true })
+  })
+  const downloadSession = await browser.target().createCDPSession()
+  await downloadSession.send('Browser.setDownloadBehavior', {
+    behavior: 'allow',
+    downloadPath: downloadDir,
+    eventsEnabled: true,
+  })
 
   await page.goto(url, { waitUntil: 'domcontentloaded' })
 
@@ -147,13 +161,34 @@ try {
   await screenshot(page, 'upload')
 
   // onUploaded 会延迟刷新列表：等对象行出现并核对大小
-  await page.waitForSelector(`[data-key="${fileName}"]`, { timeout: 15_000 })
-  assert.equal(await text(page, `[data-key="${fileName}"] .col-size`), '12.0 MiB')
+  await page.waitForSelector(`tr[data-key="${fileName}"]`, { timeout: 15_000 })
+  assert.equal(await text(page, `tr[data-key="${fileName}"] .col-size`), '12.0 MiB')
 
-  await page.click(`[data-key="${fileName}"] .row-actions button.danger`)
+  console.log('e2e：下载 12 MiB 文件（Blob 回退 + CDP 捕获）')
+  await page.click(`tr[data-key="${fileName}"] .row-actions .download`)
+  await page.waitForSelector('.download-task[data-state="done"]', { timeout: 60_000 })
+  const downloadDetail = await text(page, '.download-task[data-state="done"] .download-status')
+  assert.ok(
+    downloadDetail.includes('3 个分块'),
+    `12 MiB 应按 4 MiB 切成 3 块，实际：${downloadDetail}`,
+  )
+  await waitForText(page, '.status-text', '已下载')
+  await screenshot(page, 'download')
+
+  const downloadedPath = join(downloadDir, fileName)
+  await waitForFile(downloadedPath, uploadBytes)
+  const downloaded = await readFile(downloadedPath)
+  assert.equal(
+    createHash('sha256').update(downloaded).digest('hex'),
+    createHash('sha256').update(payload).digest('hex'),
+    '下载文件的 SHA-256 应与上传源一致',
+  )
+
+  // 下载任务同样带 data-key，等待对象行消失时必须限定到表格行。
+  await page.click(`tr[data-key="${fileName}"] .row-actions button.danger`)
   await waitForText(page, '.status-text', `已删除 ${fileName}`)
   await page.waitForFunction(
-    (name) => !document.querySelector(`[data-key="${name}"]`),
+    (name) => !document.querySelector(`tr[data-key="${name}"]`),
     { timeout: 15_000 },
     fileName,
   )
@@ -189,12 +224,13 @@ try {
   if (pageErrors.length > 0) {
     throw new Error(`页面报错：\n${pageErrors.join('\n')}`)
   }
-  console.log('e2e 通过：连接 → 建桶 → 浏览 → 上传 → 删除 → 断开 → 重连 → 删桶')
+  console.log('e2e 通过：连接 → 建桶 → 浏览 → 上传 → 下载 → 删除 → 断开 → 重连 → 删桶')
 } catch (error) {
   console.error(error)
   process.exitCode = 1
 } finally {
   if (uploadTempPath) await unlink(uploadTempPath).catch(() => {})
+  if (downloadDir) await rm(downloadDir, { recursive: true, force: true }).catch(() => {})
   await browser?.close().catch(() => {})
   if (app) {
     app.server.closeAllConnections()
@@ -223,6 +259,21 @@ async function waitForText(page: Page, selector: string, expected: string): Prom
     selector,
     expected,
   )
+}
+
+/** Chrome 先写 .crdownload，完成后才以最终文件名出现；大小吻合即可读取。 */
+async function waitForFile(path: string, expectedSize: number): Promise<void> {
+  const deadline = Date.now() + 30_000
+  for (;;) {
+    try {
+      const info = await stat(path)
+      if (info.size === expectedSize) return
+    } catch {
+      // 文件尚未出现，继续等
+    }
+    if (Date.now() > deadline) throw new Error(`等待下载文件超时：${path}`)
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100))
+  }
 }
 
 async function text(page: Page, selector: string): Promise<string> {

@@ -818,7 +818,8 @@ button.crumb:hover {
   font-size: 12px;
 }
 
-.upload-list {
+.upload-list,
+.download-list {
   list-style: none;
   margin: 12px 0 0;
   padding: 0;
@@ -829,7 +830,8 @@ button.crumb:hover {
   overflow-y: auto;
 }
 
-.upload-task {
+.upload-task,
+.download-task {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -838,14 +840,16 @@ button.crumb:hover {
   border-radius: 8px;
 }
 
-.upload-task-head {
+.upload-task-head,
+.download-task-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.upload-name {
+.upload-name,
+.download-name {
   font-family: var(--mono);
   font-size: 12px;
   overflow: hidden;
@@ -853,7 +857,8 @@ button.crumb:hover {
   white-space: nowrap;
 }
 
-.upload-meta {
+.upload-meta,
+.download-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -862,11 +867,13 @@ button.crumb:hover {
   color: var(--muted);
 }
 
-.upload-task[data-state='done'] .upload-status {
+.upload-task[data-state='done'] .upload-status,
+.download-task[data-state='done'] .download-status {
   color: var(--ok);
 }
 
-.upload-task[data-state='error'] .upload-status {
+.upload-task[data-state='error'] .upload-status,
+.download-task[data-state='error'] .download-status {
   color: var(--danger);
 }
 

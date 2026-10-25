@@ -13,6 +13,8 @@ export interface ObjectBrowserOptions {
   modal: Modal
   /** 当前桶或前缀变化时通知组合根（上传面板据此确定写入位置）。 */
   onNavigate?: (state: { bucket: string | null; prefix: string }) => void
+  /** 下载入口；必须在用户手势的同步调用链里，才能打开系统保存对话框。 */
+  onDownload?: (bucket: string, key: string) => void
 }
 
 export interface BrowserLocation {
@@ -35,6 +37,7 @@ export class ObjectBrowser {
   readonly #modal: Modal
   readonly #onStatus: StatusSink
   readonly #onNavigate: ((state: BrowserLocation) => void) | undefined
+  readonly #onDownload: ((bucket: string, key: string) => void) | undefined
 
   #client: S3Client | null = null
   #bucket: string | null = null
@@ -52,6 +55,7 @@ export class ObjectBrowser {
     this.#modal = options.modal
     this.#onStatus = options.onStatus
     this.#onNavigate = options.onNavigate
+    this.#onDownload = options.onDownload
 
     this.#bucketLabel = h('span', { class: 'muted', text: '未选择桶' })
     this.#refreshButton = h(
@@ -404,6 +408,20 @@ export class ObjectBrowser {
             'button',
             { class: 'link-button', type: 'button', on: { click: () => void this.#showDetails(object.key) } },
             '详情',
+          ),
+          h(
+            'button',
+            {
+              class: 'link-button download',
+              type: 'button',
+              on: {
+                click: () => {
+                  const bucket = this.#bucket
+                  if (bucket) this.#onDownload?.(bucket, object.key)
+                },
+              },
+            },
+            '下载',
           ),
           h(
             'button',

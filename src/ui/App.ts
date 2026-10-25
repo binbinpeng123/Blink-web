@@ -4,6 +4,7 @@ import { FetchTransport } from '../core/transport.ts'
 import type { Credentials } from '../core/types.ts'
 import { BucketList } from './BucketList.ts'
 import { ConnectionPanel } from './ConnectionPanel.ts'
+import { DownloadPanel } from './DownloadPanel.ts'
 import { append, clear, h } from './dom.ts'
 import { describeError } from './errorText.ts'
 import { Modal } from './Modal.ts'
@@ -23,6 +24,7 @@ export class App {
   readonly #bucketList: BucketList
   readonly #browser: ObjectBrowser
   readonly #upload: UploadPanel
+  readonly #download: DownloadPanel
   readonly #modal = new Modal()
   #client: S3Client | null = null
   #refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -43,12 +45,16 @@ export class App {
       modal: this.#modal,
       // 上传写入"当前正在浏览的前缀"，因此位置变化要单向通知上传面板。
       onNavigate: (state) => this.#upload.setTarget(state),
+      onDownload: (bucket, key) => this.#download.start(bucket, key),
     })
     this.#upload = new UploadPanel({
       onStatus: (message, kind) => this.#setStatus(message, kind),
       onUploaded: (bucket) => {
         if (this.#browser.bucket === bucket) this.#scheduleRefresh()
       },
+    })
+    this.#download = new DownloadPanel({
+      onStatus: (message, kind) => this.#setStatus(message, kind),
     })
     this.#bucketList = new BucketList({
       onSelect: (bucket) => this.#browser.setBucket(bucket),
@@ -95,7 +101,13 @@ export class App {
         this.#connectionPanel.element,
         this.#bucketList.element,
       ),
-      h('section', { class: 'workspace' }, this.#upload.element, this.#browser.element),
+      h(
+        'section',
+        { class: 'workspace' },
+        this.#upload.element,
+        this.#download.element,
+        this.#browser.element,
+      ),
     )
 
     clear(this.#root)
@@ -118,6 +130,7 @@ export class App {
       this.#bucketList.setClient(client, buckets)
       this.#browser.setClient(client)
       this.#upload.setClient(client)
+      this.#download.setClient(client)
       this.#setStatus(`连接成功：${buckets.length} 个桶`, 'success')
     } catch (error) {
       this.#setStatus(`连接失败：${describeError(error)}`, 'error')
@@ -132,6 +145,7 @@ export class App {
       this.#refreshTimer = undefined
     }
     this.#upload.setClient(null)
+    this.#download.setClient(null)
     this.#bucketList.setClient(null)
     this.#browser.setClient(null)
     this.#connectionPanel.showDisconnected()
