@@ -10,6 +10,8 @@ export function objectKeyProblem(key: string): string | null {
   if (key.startsWith('/')) return 'key 不能以 / 开头'
   if (key.includes('\u0000')) return 'key 不能包含空字符'
   const segments = key.split('/')
+  // 末尾斜杠是合法的目录占位对象（后端对 /b/dir/ 返回 200），只检查中间段
+  if (segments.at(-1) === '') segments.pop()
   for (const segment of segments) {
     if (segment === '') return 'key 不能包含连续的 /（会产生空路径段，后端会 301）'
     if (segment === '.' || segment === '..') {

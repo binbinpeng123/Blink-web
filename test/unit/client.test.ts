@@ -133,7 +133,11 @@ test('非法 key 在发请求前就被拒绝', async () => {
   for (const key of ['', '/abs', 'a//b', 'a/./b', 'a/../b']) {
     await assert.rejects(client.deleteObject('photos', key), /key/)
   }
-  assert.equal(transport.requests.length, 0)
+  // 末尾斜杠是合法 key，不应被拒绝
+  await client.deleteObject('photos', 'dir/')
+  assert.equal(transport.last.url, '/photos/dir/')
+  // 只有末尾斜杠那一次到达传输层，其余都在本地被拒绝
+  assert.equal(transport.requests.length, 1)
 })
 
 test('putObject 发送真实 SHA-256 作 payload hash 与校验和', async () => {
