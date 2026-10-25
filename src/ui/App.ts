@@ -9,6 +9,7 @@ import { describeError } from './errorText.ts'
 import { Modal } from './Modal.ts'
 import { ObjectBrowser } from './ObjectBrowser.ts'
 import type { StatusKind } from './status.ts'
+import { UploadPanel } from './UploadPanel.ts'
 
 /**
  * 组合根：持有页面状态与各视图，视图之间不互相引用。
@@ -21,8 +22,10 @@ export class App {
   readonly #connectionPanel: ConnectionPanel
   readonly #bucketList: BucketList
   readonly #browser: ObjectBrowser
+  readonly #upload: UploadPanel
   readonly #modal = new Modal()
   #client: S3Client | null = null
+  #refreshTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(root: HTMLElement) {
     this.#root = root
@@ -38,6 +41,14 @@ export class App {
     this.#browser = new ObjectBrowser({
       onStatus: (message, kind) => this.#setStatus(message, kind),
       modal: this.#modal,
+      // 上传写入"当前正在浏览的前缀"，因此位置变化要单向通知上传面板。
+      onNavigate: (state) => this.#upload.setTarget(state),
+    })
+    this.#upload = new UploadPanel({
+      onStatus: (message, kind) => this.#setStatus(message, kind),
+      onUploaded: (bucket) => {
+        if (this.#browser.bucket === bucket) this.#scheduleRefresh()
+      },
     })
     this.#bucketList = new BucketList({
       onSelect: (bucket) => this.#browser.setBucket(bucket),
@@ -84,7 +95,7 @@ export class App {
         this.#connectionPanel.element,
         this.#bucketList.element,
       ),
-      h('section', { class: 'workspace' }, this.#browser.element),
+      h('section', { class: 'workspace' }, this.#upload.element, this.#browser.element),
     )
 
     clear(this.#root)
@@ -106,6 +117,7 @@ export class App {
       this.#connectionPanel.showConnected({ accessKeyId: credentials.accessKeyId, region })
       this.#bucketList.setClient(client, buckets)
       this.#browser.setClient(client)
+      this.#upload.setClient(client)
       this.#setStatus(`连接成功：${buckets.length} 个桶`, 'success')
     } catch (error) {
       this.#setStatus(`连接失败：${describeError(error)}`, 'error')
@@ -115,10 +127,27 @@ export class App {
 
   #disconnect(): void {
     this.#client = null
+    if (this.#refreshTimer !== undefined) {
+      clearTimeout(this.#refreshTimer)
+      this.#refreshTimer = undefined
+    }
+    this.#upload.setClient(null)
     this.#bucketList.setClient(null)
     this.#browser.setClient(null)
     this.#connectionPanel.showDisconnected()
     this.#setStatus('已断开连接', 'info')
+  }
+
+  /**
+   * 多个文件并发上传会各自触发一次完成回调，合并成一次列表刷新，
+   * 避免同一前缀被连续请求多次。
+   */
+  #scheduleRefresh(): void {
+    if (this.#refreshTimer !== undefined) clearTimeout(this.#refreshTimer)
+    this.#refreshTimer = setTimeout(() => {
+      this.#refreshTimer = undefined
+      void this.#browser.load()
+    }, 250)
   }
 
   #setStatus(message: string, kind: StatusKind = 'info'): void {

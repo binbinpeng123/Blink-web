@@ -156,7 +156,7 @@ test('putObject 发送真实 SHA-256 作 payload hash 与校验和', async () =>
 })
 
 test('headObject 解析大小/ETag/元数据，并去掉 ETag 引号', async () => {
-  const { client } = createClient(() =>
+  const { client, transport } = createClient(() =>
     response(200, '', {
       'content-length': '4096',
       etag: '"etag-1"',
@@ -169,6 +169,8 @@ test('headObject 解析大小/ETag/元数据，并去掉 ETag 引号', async () 
   )
 
   const info = await client.headObject('photos', 'a.bin')
+  // 不显式要求，后端不会回传校验和头（与 AWS 一致）
+  assert.equal(transport.last.headers['x-amz-checksum-mode'], 'ENABLED')
   assert.equal(info.size, 4096)
   assert.equal(info.etag, 'etag-1')
   assert.equal(info.contentType, 'application/octet-stream')
@@ -248,6 +250,9 @@ test('completeMultipartUpload 按升序提交，ETag 补引号并带分片校验
   assert.equal(transport.last.url, '/photos/big.bin?uploadId=up%2F1')
   // Complete 的请求体本身也要签名，不能沿用空体哈希
   assert.notEqual(transport.last.headers['x-amz-content-sha256'], SHA256_OF_EMPTY)
+  // Complete 上的 checksum 头表示"声明的全对象校验和"，不是请求体校验和：
+  // 带上请求体哈希会被后端判为 BadDigest。
+  assert.equal(transport.last.headers['x-amz-checksum-sha256'], undefined)
   assert.equal(result.etag, 'final')
   assert.equal(result.checksumType, 'COMPOSITE')
 })
@@ -276,4 +281,25 @@ test('Range 请求的状态错误同样映射为 S3Error', async () => {
     client.getObjectRange('photos', 'a.bin', { start: 10, end: 20 }),
     (error: unknown) => error instanceof S3Error && error.code === 'InvalidRange',
   )
+})
+
+test('签名等待期间被取消：请求不再下发到传输层', async () => {
+  // #sign 是异步边界：即便入场时信号未取消，等待期间也可能被取消，
+  // 此时下发会让后端收到一条"用户已经放弃"的请求（且真实传输层可能永久挂起）。
+  const { client, transport } = createClient(() => response(200))
+
+  const controller = new AbortController()
+  const get = client.getObject('photos', 'a.bin', controller.signal)
+  const range = client.getObjectRange('photos', 'a.bin', {
+    start: 0,
+    end: 10,
+    signal: controller.signal,
+  })
+  controller.abort()
+
+  const isAbort = (error: unknown) =>
+    error instanceof DOMException && error.name === 'AbortError'
+  await assert.rejects(get, isAbort)
+  await assert.rejects(range, isAbort)
+  assert.equal(transport.requests.length, 0)
 })

@@ -1,6 +1,6 @@
 import { SHA256_OF_EMPTY, sha256 } from './crypto.ts'
 import { decodeKeyText, encodeBucket, encodeKey, toBase64, toHex } from './encoding.ts'
-import { S3Error, errorFromResponse } from './errors.ts'
+import { S3Error, abortError, errorFromResponse } from './errors.ts'
 import { assertObjectKey, bucketProblem } from './keys.ts'
 import type { Signer } from './types.ts'
 import type { HttpRequest, HttpResponse, HttpStreamResponse, HttpTransport, QueryParam } from './types.ts'
@@ -161,7 +161,14 @@ export class S3Client {
   }
 
   async headObject(bucket: string, key: string, signal?: AbortSignal): Promise<ObjectInfo> {
-    const res = await this.#call({ method: 'HEAD', bucket, key, signal })
+    const res = await this.#call({
+      method: 'HEAD',
+      bucket,
+      key,
+      // 与 AWS 一致：不表态就不回传校验和头。详情页要显示 checksum 类型，必须显式要求。
+      headers: { 'x-amz-checksum-mode': 'ENABLED' },
+      signal,
+    })
     const metadata: Record<string, string> = {}
     for (const [name, value] of res.headers) {
       if (name.startsWith('x-amz-meta-')) metadata[name.slice('x-amz-meta-'.length)] = value
@@ -279,10 +286,10 @@ export class S3Client {
       query: [{ key: 'uploadId', value: uploadId }],
       body,
       payloadHash: toHex(digest),
-      headers: {
-        'content-type': 'application/xml',
-        'x-amz-checksum-sha256': toBase64(digest),
-      },
+      // 这里刻意不带 x-amz-checksum-sha256：在 Complete 请求上它不是"请求体的校验和"，
+      // 而是客户端声明的**全对象**校验和（S3 会用它与合并结果比对）。分片校验和已在
+      // UploadPart 逐片核对过，再多声明一个形状不同的值只会被判 BadDigest。
+      headers: { 'content-type': 'application/xml' },
       signal,
     })
     const root = this.#xml(res)
@@ -313,6 +320,7 @@ export class S3Client {
     key: string,
     options: { start: number; end: number; etag?: string; signal?: AbortSignal },
   ): Promise<HttpStreamResponse> {
+    if (options.signal?.aborted) throw abortError()
     const headers: Record<string, string> = {
       range: `bytes=${options.start}-${options.end}`,
     }
@@ -326,6 +334,7 @@ export class S3Client {
       key,
       headers,
     })
+    if (options.signal?.aborted) throw abortError()
     const res = await this.#transport.stream({
       method: 'GET',
       ...signed,
@@ -349,7 +358,12 @@ export class S3Client {
   }
 
   async #call(options: CallOptions & { payloadHash?: string }): Promise<HttpResponse> {
+    // 已取消的请求绝不下发：传输层实现未必保证对"入场即已取消"的信号立即失败，
+    // 提前拦截既省一次哈希/签名，也避免请求在取消后才到达后端。
+    if (options.signal?.aborted) throw abortError()
     const signed = await this.#sign(options)
+    // 签名是异步边界：等待期间可能已被取消，下发前必须再确认一次。
+    if (options.signal?.aborted) throw abortError()
     const request: HttpRequest = {
       method: options.method,
       ...signed,

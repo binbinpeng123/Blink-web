@@ -11,6 +11,13 @@ const PAGE_SIZE = 200
 export interface ObjectBrowserOptions {
   onStatus: StatusSink
   modal: Modal
+  /** 当前桶或前缀变化时通知组合根（上传面板据此确定写入位置）。 */
+  onNavigate?: (state: { bucket: string | null; prefix: string }) => void
+}
+
+export interface BrowserLocation {
+  bucket: string | null
+  prefix: string
 }
 
 export class ObjectBrowser {
@@ -27,6 +34,7 @@ export class ObjectBrowser {
   readonly #pageLabel: HTMLSpanElement
   readonly #modal: Modal
   readonly #onStatus: StatusSink
+  readonly #onNavigate: ((state: BrowserLocation) => void) | undefined
 
   #client: S3Client | null = null
   #bucket: string | null = null
@@ -43,6 +51,7 @@ export class ObjectBrowser {
   constructor(options: ObjectBrowserOptions) {
     this.#modal = options.modal
     this.#onStatus = options.onStatus
+    this.#onNavigate = options.onNavigate
 
     this.#bucketLabel = h('span', { class: 'muted', text: '未选择桶' })
     this.#refreshButton = h(
@@ -141,6 +150,14 @@ export class ObjectBrowser {
     this.#render()
   }
 
+  get bucket(): string | null {
+    return this.#bucket
+  }
+
+  get prefix(): string {
+    return this.#prefix
+  }
+
   setClient(client: S3Client | null): void {
     this.#client = client
     this.setEnabled(client !== null && this.#bucket !== null)
@@ -150,6 +167,7 @@ export class ObjectBrowser {
       this.#resetView()
       this.#render()
     }
+    this.#notifyLocation()
   }
 
   setBucket(bucket: string | null): void {
@@ -158,7 +176,12 @@ export class ObjectBrowser {
     this.#prefixInput.value = ''
     this.#resetView()
     this.setEnabled(this.#client !== null && bucket !== null)
+    this.#notifyLocation()
     void this.load()
+  }
+
+  #notifyLocation(): void {
+    this.#onNavigate?.({ bucket: this.#bucket, prefix: this.#prefix })
   }
 
   async load(): Promise<void> {
@@ -221,6 +244,7 @@ export class ObjectBrowser {
     this.#prefixInput.value = prefix
     this.#tokens = [undefined]
     this.#page = 0
+    this.#notifyLocation()
     void this.load()
   }
 

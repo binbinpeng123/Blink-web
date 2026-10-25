@@ -103,3 +103,8 @@ export function isAbortError(error: unknown): boolean {
     ? error.name === 'AbortError'
     : error instanceof Error && error.name === 'AbortError'
 }
+
+/** 统一的取消错误：所有层（传输、重试、信号量、用例）抛出同一种形态。 */
+export function abortError(message = '操作已取消'): Error {
+  return new DOMException(message, 'AbortError')
+}

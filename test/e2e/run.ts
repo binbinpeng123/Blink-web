@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { randomFillSync } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { mkdir, unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { S3Client } from '../../src/core/client.ts'
@@ -45,6 +47,7 @@ if (!existsSync(CHROME_PATH)) {
 let blink: BlinkInstance | undefined
 let app: ReturnType<typeof createBlinkServer> | undefined
 let browser: Browser | undefined
+let uploadTempPath: string | undefined
 
 try {
   blink = await startBlink()
@@ -90,7 +93,8 @@ try {
   await page.click('.bucket-create button[type="submit"]')
   await page.waitForSelector(`[data-bucket="${BUCKET}"]`, { timeout: 15_000 })
   await waitForText(page, '.row-message', '桶是空的')
-  assert.equal(await text(page, '.panel-head-right .muted'), BUCKET)
+  // 上传面板也有一个 .panel-head-right：必须限定到对象面板，避免选错元素
+  assert.equal(await text(page, 'section[aria-labelledby="objects-title"] .panel-head-right .muted'), BUCKET)
 
   console.log('e2e：列表、详情与删除对象')
   const content = new TextEncoder().encode('hello blink\n')
@@ -122,6 +126,39 @@ try {
   await page.click('.breadcrumb button.crumb')
   await waitForText(page, '.row-message', '桶是空的')
 
+  console.log('e2e：上传 12 MiB 文件（分片）')
+  // 12 MiB 超过单 PUT 阈值，按默认 8 MiB 分片切成 8 MiB + 4 MiB，覆盖分片与 Complete 链路。
+  const uploadBytes = 12 * 1024 * 1024
+  const fileName = `e2e-upload-${Date.now()}.bin`
+  uploadTempPath = join(tmpdir(), fileName)
+  const payload = new Uint8Array(uploadBytes)
+  randomFillSync(payload)
+  await writeFile(uploadTempPath, payload)
+
+  await waitForText(page, '.upload-target', `${BUCKET}/`)
+  const fileInput = await page.waitForSelector('input[type="file"]', { timeout: 15_000 })
+  assert.ok(fileInput, '找不到上传文件输入框')
+  await fileInput.uploadFile(uploadTempPath)
+  await waitForText(page, '.status-text', `开始上传 ${fileName}`)
+  await page.waitForSelector('.upload-task[data-state="done"]', { timeout: 60_000 })
+  await waitForText(page, '.status-text', '已上传')
+  const uploadDetail = await text(page, '.upload-task[data-state="done"] .upload-status')
+  assert.ok(uploadDetail.includes('2 个分片'), `12 MiB 应按 8 MiB 切成 2 个分片，实际：${uploadDetail}`)
+  await screenshot(page, 'upload')
+
+  // onUploaded 会延迟刷新列表：等对象行出现并核对大小
+  await page.waitForSelector(`[data-key="${fileName}"]`, { timeout: 15_000 })
+  assert.equal(await text(page, `[data-key="${fileName}"] .col-size`), '12.0 MiB')
+
+  await page.click(`[data-key="${fileName}"] .row-actions button.danger`)
+  await waitForText(page, '.status-text', `已删除 ${fileName}`)
+  await page.waitForFunction(
+    (name) => !document.querySelector(`[data-key="${name}"]`),
+    { timeout: 15_000 },
+    fileName,
+  )
+  await waitForText(page, '.row-message', '桶是空的')
+
   console.log('e2e：断开连接')
   await page.click('.connection-summary button[name="disconnect"]')
   await waitForText(page, '.status-text', '已断开连接')
@@ -144,16 +181,20 @@ try {
   await page.click('.bucket-row.selected .bucket-delete')
   await waitForText(page, '.status-text', '已删除桶')
   await waitForText(page, '.bucket-empty', '尚未创建桶')
-  assert.equal(await text(page, '.panel-head-right .muted'), '未选择桶')
+  assert.equal(
+    await text(page, 'section[aria-labelledby="objects-title"] .panel-head-right .muted'),
+    '未选择桶',
+  )
 
   if (pageErrors.length > 0) {
     throw new Error(`页面报错：\n${pageErrors.join('\n')}`)
   }
-  console.log('e2e 通过：连接 → 建桶 → 浏览 → 断开 → 重连 → 删桶')
+  console.log('e2e 通过：连接 → 建桶 → 浏览 → 上传 → 删除 → 断开 → 重连 → 删桶')
 } catch (error) {
   console.error(error)
   process.exitCode = 1
 } finally {
+  if (uploadTempPath) await unlink(uploadTempPath).catch(() => {})
   await browser?.close().catch(() => {})
   if (app) {
     app.server.closeAllConnections()
