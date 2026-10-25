@@ -192,7 +192,21 @@ export class S3Client {
     contentType?: string,
     signal?: AbortSignal,
   ): Promise<WriteResult> {
-    const digest = await sha256(body)
+    return this.putObjectWithDigest(bucket, key, body, await sha256(body), contentType, signal)
+  }
+
+  /**
+   * 调用方已经算过 SHA-256 时复用摘要，避免对同一份大对象做两次哈希。
+   * 压测需要把哈希成本计入请求延迟，同时还要用同一摘要校验响应。
+   */
+  async putObjectWithDigest(
+    bucket: string,
+    key: string,
+    body: Uint8Array,
+    digest: Uint8Array,
+    contentType?: string,
+    signal?: AbortSignal,
+  ): Promise<WriteResult> {
     const res = await this.#call({
       method: 'PUT',
       bucket,

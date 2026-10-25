@@ -2,6 +2,7 @@ import { S3Client } from '../core/client.ts'
 import { SigV4Signer } from '../core/signer.ts'
 import { FetchTransport } from '../core/transport.ts'
 import type { Credentials } from '../core/types.ts'
+import { BenchmarkPanel } from './BenchmarkPanel.ts'
 import { BucketList } from './BucketList.ts'
 import { ConnectionPanel } from './ConnectionPanel.ts'
 import { DownloadPanel } from './DownloadPanel.ts'
@@ -25,6 +26,7 @@ export class App {
   readonly #browser: ObjectBrowser
   readonly #upload: UploadPanel
   readonly #download: DownloadPanel
+  readonly #benchmark: BenchmarkPanel
   readonly #modal = new Modal()
   #client: S3Client | null = null
   #refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -40,11 +42,17 @@ export class App {
       this.#statusText,
     )
 
+    this.#benchmark = new BenchmarkPanel({
+      onStatus: (message, kind) => this.#setStatus(message, kind),
+    })
     this.#browser = new ObjectBrowser({
       onStatus: (message, kind) => this.#setStatus(message, kind),
       modal: this.#modal,
-      // 上传写入"当前正在浏览的前缀"，因此位置变化要单向通知上传面板。
-      onNavigate: (state) => this.#upload.setTarget(state),
+      // 上传写入"当前正在浏览的前缀"，压测只跟随当前桶（前缀固定为 bench/）。
+      onNavigate: (state) => {
+        this.#upload.setTarget(state)
+        this.#benchmark.setTarget(state)
+      },
       onDownload: (bucket, key) => this.#download.start(bucket, key),
     })
     this.#upload = new UploadPanel({
@@ -107,6 +115,7 @@ export class App {
         this.#upload.element,
         this.#download.element,
         this.#browser.element,
+        this.#benchmark.element,
       ),
     )
 
@@ -128,6 +137,7 @@ export class App {
       this.#client = client
       this.#connectionPanel.showConnected({ accessKeyId: credentials.accessKeyId, region })
       this.#bucketList.setClient(client, buckets)
+      this.#benchmark.setClient(client)
       this.#browser.setClient(client)
       this.#upload.setClient(client)
       this.#download.setClient(client)
@@ -144,6 +154,8 @@ export class App {
       clearTimeout(this.#refreshTimer)
       this.#refreshTimer = undefined
     }
+    // 先停掉压测：它会用运行开始时捕获的客户端清理已写入对象。
+    this.#benchmark.setClient(null)
     this.#upload.setClient(null)
     this.#download.setClient(null)
     this.#bucketList.setClient(null)

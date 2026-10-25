@@ -194,6 +194,32 @@ try {
   )
   await waitForText(page, '.row-message', '桶是空的')
 
+  console.log('e2e：浏览器压测面板（快速基线 + 自动清理）')
+  await fill(page, 'input[name="bench-sizes"]', '64KiB')
+  await fill(page, 'input[name="bench-concurrencies"]', '1')
+  await fill(page, 'input[name="bench-samples"]', '5')
+  await fill(page, 'input[name="bench-duration"]', '0')
+  await page.click('button[name="bench-start"]')
+  await waitForText(page, '.status-text', '压测完成')
+  await waitForText(page, '.bench-summary', '已清理')
+  const benchRows = await page.$$eval('.bench-table tbody tr', (rows) => rows.length)
+  assert.equal(benchRows, 2, 'PUT 与 GET 各应产生一行结果')
+  assert.equal(
+    await page.evaluate(() => document.querySelectorAll('.bench-status[data-kind="ok"]').length),
+    2,
+    '快速基线不应出现错误或校验和不一致',
+  )
+  assert.equal(
+    await page.evaluate(() => document.querySelector<HTMLElement>('button[name="bench-export"]')?.hidden),
+    false,
+    '有结果时应可导出 JSON',
+  )
+  await screenshot(page, 'benchmark')
+
+  // 面板只删除自己记录的对象；刷新后桶应恢复为空。
+  await page.click('[aria-label="刷新当前前缀"]')
+  await waitForText(page, '.row-message', '桶是空的')
+
   console.log('e2e：断开连接')
   await page.click('.connection-summary button[name="disconnect"]')
   await waitForText(page, '.status-text', '已断开连接')
