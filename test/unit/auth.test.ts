@@ -124,6 +124,15 @@ test('未登录：页面导航跳登录页，静态资源与 /s3 返回 401 且�
       headers: { accept: 'application/xml' },
     })
     assert.equal(s3.status, 401)
+    assert.match(s3.headers.get('content-type') ?? '', /application\/xml/)
+    assert.match(await s3.text(), /<Code>AccessDenied<\/Code>/)
+
+    const s3Head = await fetch(`${f.url}/s3/bucket/key`, {
+      method: 'HEAD',
+      redirect: 'manual',
+    })
+    assert.equal(s3Head.status, 401)
+    assert.equal(await s3Head.text(), '')
 
     const head = await fetch(`${f.url}/`, {
       method: 'HEAD',

@@ -5,7 +5,9 @@ const BASE_OPTIONS: RequestInit = {
   // 后端不返回 Cache-Control；不显式禁用的话，浏览器可能用 Last-Modified 做启发式缓存，
   // 下载与压测就会变成"读浏览器内存"。
   cache: 'no-store',
-  credentials: 'omit',
+  // 公网模式下 /s3 与页面同源，必须带上 Blink-web 的会话 Cookie；设为
+  // same-origin 不会把凭据发给跨源端点（压测 CLI 在 Node 中也没有 Cookie 罐）。
+  credentials: 'same-origin',
   // 代理或后端若返回 3xx，跟随后的路径不再匹配签名；直接失败更诚实。
   redirect: 'error',
   referrerPolicy: 'no-referrer',

@@ -141,6 +141,10 @@ export function createSessionAuth(options: SessionAuthOptions): SessionAuth {
     const acceptsHtml = String(req.headers.accept ?? '').includes('text/html')
     if ((req.method === 'GET' || req.method === 'HEAD') && acceptsHtml) {
       redirect(res, `${LOGIN_PATH}?next=${encodeURIComponent(pathname + search)}`)
+    } else if (pathname === '/s3' || pathname.startsWith('/s3/')) {
+      // 前端把代理当 S3 端点解析；返回 S3 风格的 XML 错误，避免 UI 显示
+      // "UnknownError [HTTP 401]" 这样的原始状态。
+      unauthorizedXml(req, res, pathname)
     } else {
       plain(res, 401, '未登录或会话已过期，请刷新页面重新登录')
     }
@@ -308,6 +312,26 @@ function redirect(res: ServerResponse, location: string, status = 303): void {
     'referrer-policy': 'no-referrer',
   })
   res.end()
+}
+
+function unauthorizedXml(req: IncomingMessage, res: ServerResponse, pathname: string): void {
+  const resource = escapeHtml(pathname === '/s3' ? '/' : pathname.slice(3))
+  const body =
+    '<?xml version="1.0" encoding="UTF-8"?>' +
+    '<Error><Code>AccessDenied</Code>' +
+    '<Message>未登录或会话已过期，请刷新页面重新登录</Message>' +
+    `<Resource>${resource}</Resource></Error>`
+  if (res.headersSent) {
+    res.destroy()
+    return
+  }
+  res.writeHead(401, {
+    'content-type': 'application/xml; charset=utf-8',
+    'content-length': String(Buffer.byteLength(body)),
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  })
+  res.end(req.method === 'HEAD' ? undefined : body)
 }
 
 function plain(res: ServerResponse, status: number, body: string): void {
