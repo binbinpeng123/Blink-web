@@ -244,7 +244,10 @@ export interface HttpTransport {
   （`HttpOnly; SameSite=Lax`，HTTPS 时 `Secure`），会话是
   `issued.expires.HMAC-SHA256` 的无状态值，签名密钥由令牌派生——轮换令牌即让所有
   旧会话失效。令牌比较与签名校验均使用常量时间比较。未登录的页面导航跳登录页，
-  `/s3` 与资源请求返回 401。
+  `/s3` 返回 S3 风格的 `AccessDenied` XML，其余资源请求返回纯文本 401。
+- **同源凭据**：`FetchTransport` 固定 `credentials: 'same-origin'`。公网模式下
+  `/s3` 与页面同源，浏览器必须带上会话 Cookie；设为 `'omit'` 会让门禁永远判定
+  未登录。跨源端点仍不会收到 Cookie，Node 压测 CLI 也没有 Cookie 罐。
 - **不做多用户**：令牌是共享口令，没有账号、权限分级、审计或失败速率限制；
   它只解决"谁能进入测试台"，不替代 S3 凭据。
 - **TLS 终止在外部**：服务端不内置 TLS，依赖 Cloudflare 隧道或可信反向代理；
