@@ -272,10 +272,46 @@ export class ObjectBrowser {
     if (!client || !bucket) return
     try {
       const info = await client.headObject(bucket, key)
-      this.#modal.open('对象详情', detailContent(info))
+      this.#modal.open(
+        '对象详情',
+        h(
+          'div',
+          {},
+          detailContent(info),
+          h(
+            'div',
+            { class: 'modal-actions' },
+            h(
+              'button',
+              { class: 'secondary', type: 'button', on: { click: () => this.#modal.close() } },
+              '关闭',
+            ),
+            h(
+              'button',
+              {
+                class: 'primary download-object',
+                type: 'button',
+                // close() 与 onDownload 必须同步执行：保存对话框依赖这次用户手势。
+                on: {
+                  click: () => {
+                    this.#modal.close()
+                    this.#startDownload(key)
+                  },
+                },
+              },
+              '下载对象',
+            ),
+          ),
+        ),
+      )
     } catch (error) {
       this.#onStatus(describeError(error), 'error')
     }
+  }
+
+  #startDownload(key: string): void {
+    const bucket = this.#bucket
+    if (bucket) this.#onDownload?.(bucket, key)
   }
 
   async #deleteObject(key: string): Promise<void> {
@@ -391,7 +427,7 @@ export class ObjectBrowser {
     return h(
       'tr',
       { attrs: { 'data-key': object.key } },
-      h('td', {}, h('button', { class: 'row-name', type: 'button', title: object.key, on: { click: () => void this.#showDetails(object.key) } }, name)),
+      h('td', {}, h('button', { class: 'row-name', type: 'button', title: `${object.key}（点击查看详情，可在详情中下载）`, on: { click: () => void this.#showDetails(object.key) } }, name)),
       h('td', { class: 'col-size', text: formatBytes(object.size) }),
       h('td', { class: 'col-date', text: formatDate(object.lastModified) }),
       h(
@@ -414,12 +450,8 @@ export class ObjectBrowser {
             {
               class: 'link-button download',
               type: 'button',
-              on: {
-                click: () => {
-                  const bucket = this.#bucket
-                  if (bucket) this.#onDownload?.(bucket, object.key)
-                },
-              },
+              title: `下载 ${object.key}`,
+              on: { click: () => this.#startDownload(object.key) },
             },
             '下载',
           ),

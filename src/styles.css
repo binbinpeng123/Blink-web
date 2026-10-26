@@ -580,12 +580,13 @@ button.crumb:hover {
 }
 
 .col-actions {
-  width: 96px;
+  width: 150px;
 }
 
 .row-actions {
   display: flex;
   gap: 10px;
+  white-space: nowrap;
 }
 
 .row-name {
@@ -755,6 +756,15 @@ button.crumb:hover {
   font-family: var(--mono);
   font-size: 12px;
   word-break: break-all;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
 }
 
 /* ---------- 不可用提示 ---------- */

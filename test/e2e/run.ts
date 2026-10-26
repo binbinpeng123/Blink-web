@@ -110,7 +110,7 @@ try {
   // 上传面板也有一个 .panel-head-right：必须限定到对象面板，避免选错元素
   assert.equal(await text(page, 'section[aria-labelledby="objects-title"] .panel-head-right .muted'), BUCKET)
 
-  console.log('e2e：列表、详情与删除对象')
+  console.log('e2e：列表、详情与下载对象')
   const content = new TextEncoder().encode('hello blink\n')
   await seed.putObject(BUCKET, 'docs/hello.txt', content, 'text/plain')
   await page.click('.workspace .panel-head-right .icon-button')
@@ -122,18 +122,26 @@ try {
   assert.equal(await text(page, '[data-key="docs/hello.txt"] .col-size'), `${content.length} B`)
   await screenshot(page, 'objects')
 
-  await page.click('[data-key="docs/hello.txt"] .row-actions button:first-child')
+  // 点对象名是用户最自然的动作：应打开详情，且详情里必须有明确的下载入口。
+  await page.click('[data-key="docs/hello.txt"] .row-name')
   await waitForText(page, '.modal-title', '对象详情')
   const details = await text(page, '.modal-body')
   assert.ok(details.includes('docs/hello.txt'), '详情应包含 key')
   assert.ok(details.includes('Content-Type'), '详情应包含 Content-Type')
   await screenshot(page, 'details')
-  await page.keyboard.press('Escape')
+
+  await page.click('.modal-body button.download-object')
+  await page.waitForSelector('.download-task[data-key="docs/hello.txt"][data-state="done"]', {
+    timeout: 30_000,
+  })
+  await waitForFile(join(downloadDir, 'hello.txt'), content.length)
+  assert.equal(await readFile(join(downloadDir, 'hello.txt'), 'utf8'), 'hello blink\n')
   await page.waitForFunction(() => document.querySelector<HTMLElement>('.modal-backdrop')?.hidden === true)
 
   await page.click('[data-key="docs/hello.txt"] .row-actions button.danger')
   await waitForText(page, '.status-text', '已删除 docs/hello.txt')
-  await page.waitForFunction(() => !document.querySelector('[data-key="docs/hello.txt"]'), {
+  // 下载任务 li 也带 data-key，等待对象行消失时必须限定到表格行。
+  await page.waitForFunction(() => !document.querySelector('tr[data-key="docs/hello.txt"]'), {
     timeout: 15_000,
   })
   await waitForText(page, '.row-message', '此前缀下没有对象')
@@ -166,8 +174,9 @@ try {
 
   console.log('e2e：下载 12 MiB 文件（Blob 回退 + CDP 捕获）')
   await page.click(`tr[data-key="${fileName}"] .row-actions .download`)
-  await page.waitForSelector('.download-task[data-state="done"]', { timeout: 60_000 })
-  const downloadDetail = await text(page, '.download-task[data-state="done"] .download-status')
+  const blobTask = `.download-task[data-key="${fileName}"][data-state="done"]`
+  await page.waitForSelector(blobTask, { timeout: 60_000 })
+  const downloadDetail = await text(page, `${blobTask} .download-status`)
   assert.ok(
     downloadDetail.includes('3 个分块'),
     `12 MiB 应按 4 MiB 切成 3 块，实际：${downloadDetail}`,
@@ -182,6 +191,47 @@ try {
     createHash('sha256').update(downloaded).digest('hex'),
     createHash('sha256').update(payload).digest('hex'),
     '下载文件的 SHA-256 应与上传源一致',
+  )
+
+  console.log('e2e：下载 12 MiB 文件（File System Access 流式写盘）')
+  // 无头环境弹不出系统保存对话框：用 OPFS 的 FileSystemFileHandle 冒充用户选定的
+  // 文件，覆盖 createWritable + FileSink 的真实写盘路径（上面的用例走的是 Blob 回退）。
+  await page.click('section[aria-labelledby="download-title"] .panel-head-right .link-button')
+  await page.waitForFunction(() => document.querySelectorAll('.download-task').length === 0)
+  const opfsName = 'e2e-fsapi-download.bin'
+  await page.evaluate((name) => {
+    Object.defineProperty(window, 'showSaveFilePicker', {
+      configurable: true,
+      value: async () => {
+        const root = await navigator.storage.getDirectory()
+        return root.getFileHandle(name, { create: true })
+      },
+    })
+  }, opfsName)
+
+  await page.click(`tr[data-key="${fileName}"] .row-actions .download`)
+  await page.waitForSelector(`.download-task[data-key="${fileName}"][data-state="done"]`, {
+    timeout: 60_000,
+  })
+  const fsapiDetail = await text(page, '.download-task .download-status')
+  assert.ok(
+    fsapiDetail.includes('3 个分块'),
+    `流式写盘同样应按 4 MiB 切成 3 块，实际：${fsapiDetail}`,
+  )
+  const written = await page.evaluate(async (name) => {
+    const root = await navigator.storage.getDirectory()
+    const file = await (await root.getFileHandle(name)).getFile()
+    const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+    const sha256 = [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
+    return { size: file.size, sha256 }
+  }, opfsName)
+  assert.equal(written.size, uploadBytes, 'OPFS 文件大小应与源文件一致')
+  assert.equal(
+    written.sha256,
+    createHash('sha256').update(payload).digest('hex'),
+    '流式写盘的内容应与上传源一致',
   )
 
   // 下载任务同样带 data-key，等待对象行消失时必须限定到表格行。

@@ -137,7 +137,10 @@ export class DownloadPanel {
     task.startedAt = performance.now()
     task.lastTime = task.startedAt
     this.#renderTask(task)
-    this.#onStatus(`准备下载 ${task.key}`, 'info')
+    this.#onStatus(
+      `准备下载 ${task.key}：如果弹出系统「保存文件」对话框，请在那里确认保存位置`,
+      'info',
+    )
 
     let sink: DownloadSink
     try {
@@ -225,7 +228,7 @@ export class DownloadPanel {
       { class: 'progress', attrs: { role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100' } },
       bar,
     )
-    const statusText = h('span', { class: 'download-status', text: '等待选择保存位置…' })
+    const statusText = h('span', { class: 'download-status', text: '等待系统保存对话框…' })
     const sizeText = h('span', { class: 'download-size muted', text: '' })
     const action = h('button', { class: 'link-button', type: 'button' }, '取消')
     const element = h(
@@ -315,7 +318,7 @@ export class DownloadPanel {
 
     switch (task.state) {
       case 'preparing':
-        task.statusText.textContent = '等待选择保存位置…'
+        task.statusText.textContent = '等待系统保存对话框…'
         break
       case 'downloading': {
         const rate = task.rate ? ` · ${formatRate(task.rate, 1000)}` : ''

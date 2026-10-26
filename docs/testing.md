@@ -11,8 +11,8 @@
 | 类型检查 `tsc --noEmit` | 通过 |
 | 单元测试 | 84 / 84 通过，约 0.54 s |
 | 集成测试（真实 Blink） | 8 / 8 通过，约 1.2 s |
-| e2e（Chrome + 生产代理） | 通过：连接 → 建桶 → 浏览 → 上传 → 下载 → 删除 → 压测面板 → 断开 → 重连 → 删桶 |
-| 生产构建 | 通过，JS 71.23 kB（gzip 23.87 kB），CSS 12.95 kB（gzip 3.36 kB） |
+| e2e（Chrome + 生产代理） | 通过：连接 → 建桶 → 浏览 → 点对象名在详情中下载 → 上传 → 下载（流式写盘 + Blob 回退）→ 删除 → 压测面板 → 断开 → 重连 → 删桶 |
+| 生产构建 | 通过，JS 71.66 kB（gzip 24.03 kB），CSS 13.10 kB（gzip 3.39 kB） |
 | CLI 压测（本机 Apple M4） | 24 个用例，0 错误，0 校验和不一致；总写入 512 MiB，总耗时 247.5 s |
 | CLI 压测（开发机 bd13） | 22 个用例执行、2 个因预算跳过，0 错误，0 校验和不一致；写入预算 16 GiB，总耗时 152.6 s；**环境不同，见第 9 节，不与本机数字混比** |
 
@@ -45,7 +45,7 @@
 | 类型 | `strict` + `noUncheckedIndexedAccess` | `npm run typecheck` | 通过 |
 | 单元 | SigV4 官方向量、URI/query 编码、XML 解析、分片规划、重试与取消、压测预算与统计、key 校验、列表解码 | `npm test` | 84 通过 |
 | 集成 | 启动真实 Blink（临时数据目录、假凭据）：建桶/列表/删桶、代理 Host 与路径不变式、S3 错误码、12 MiB 分片上传往返 SHA-256、Range 下载 SHA-256、`If-Match` 防替换、取消分片不留对象 | `npm run test:integration` | 8 通过 |
-| e2e | Puppeteer 驱动真实 Chrome，覆盖完整 UI 流程；无头环境走 Blob 回退，下载内容经 CDP 捕获后比对 SHA-256；断言 sessionStorage 不含 secret；浏览器压测面板跑通并自动清理 | `npm run test:e2e` | 通过 |
+| e2e | Puppeteer 驱动真实 Chrome，覆盖完整 UI 流程；下载覆盖两个入口（对象行、点对象名后的详情弹窗）与两条写盘路径（OPFS 注入模拟 FileSink 流式写盘、Blob 回退经 CDP 捕获），内容均比对 SHA-256；断言 sessionStorage 不含 secret；浏览器压测面板跑通并自动清理 | `npm run test:e2e` | 通过 |
 
 集成测试在 `../Blink/bin/blink` 缺失时会以显式 skip 原因跳过并以 0 退出（报告中
 显示为 skipped），不会把未执行的用例伪装成通过。

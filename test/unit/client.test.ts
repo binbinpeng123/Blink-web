@@ -299,7 +299,8 @@ test('签名等待期间被取消：请求不再下发到传输层', async () =>
 
   const isAbort = (error: unknown) =>
     error instanceof DOMException && error.name === 'AbortError'
-  await assert.rejects(get, isAbort)
-  await assert.rejects(range, isAbort)
+  // 两个断言同时挂上处理器：先 await 其中一个会让另一个的拒绝在事件循环里
+  // 短暂处于未处理状态，负载高时 node:test 会把它当成未处理拒绝而误报失败。
+  await Promise.all([assert.rejects(get, isAbort), assert.rejects(range, isAbort)])
   assert.equal(transport.requests.length, 0)
 })
