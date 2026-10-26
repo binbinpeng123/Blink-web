@@ -75,6 +75,20 @@ export class App {
   }
 
   start(): void {
+    const logout = h('button', {
+      class: 'link-button logout-button',
+      text: '退出登录',
+      type: 'button',
+      hidden: true,
+      title: '清除本站会话 Cookie，回到访问验证页',
+    })
+    logout.addEventListener('click', () => {
+      logout.disabled = true
+      void fetch('/__logout', { method: 'POST', credentials: 'same-origin' })
+        .catch(() => {})
+        .finally(() => location.assign('/__login'))
+    })
+
     const header = h(
       'header',
       { class: 'app-header' },
@@ -91,14 +105,20 @@ export class App {
       ),
       h(
         'div',
-        {
-          class: 'endpoint',
-          title: '后端地址只由服务端 BLINK_ENDPOINT 决定，浏览器只访问同源 /s3',
-        },
-        h('span', { class: 'muted', text: '同源代理' }),
-        h('code', { text: '/s3' }),
+        { class: 'header-actions' },
+        h(
+          'div',
+          {
+            class: 'endpoint',
+            title: '后端地址只由服务端 BLINK_ENDPOINT 决定，浏览器只访问同源 /s3',
+          },
+          h('span', { class: 'muted', text: '同源代理' }),
+          h('code', { text: '/s3' }),
+        ),
+        logout,
       ),
     )
+    void this.#detectAuth(logout)
 
     const main = h(
       'main',
@@ -122,6 +142,18 @@ export class App {
     clear(this.#root)
     append(this.#root, header, main, this.#statusBar)
     this.#setStatus('未连接：填写凭据后点「连接」', 'info')
+  }
+
+  /** 公网部署才显示退出入口；开发服务器没有 /__authz 时保持隐藏。 */
+  async #detectAuth(button: HTMLButtonElement): Promise<void> {
+    try {
+      const response = await fetch('/__authz', { cache: 'no-store' })
+      if (!response.ok) return
+      const data = (await response.json()) as { required?: unknown }
+      button.hidden = data.required !== true
+    } catch {
+      // 离线或前端开发服务器：无需退出登录
+    }
   }
 
   async #connect(credentials: Credentials, region: string): Promise<void> {

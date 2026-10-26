@@ -48,6 +48,9 @@ const DROPPED_HEADERS = new Set([
   'transfer-encoding',
   'upgrade',
   'expect',
+  // 会话 Cookie 只属于 Blink-web，不透传给后端，也禁止后端设置 Cookie
+  'cookie',
+  'set-cookie',
 ])
 
 export function createS3Proxy(options: ProxyOptions): ConnectMiddleware {

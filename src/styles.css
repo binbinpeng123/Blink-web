@@ -110,6 +110,16 @@ body {
   font-size: 12px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.logout-button {
+  white-space: nowrap;
+}
+
 .endpoint {
   display: flex;
   align-items: center;

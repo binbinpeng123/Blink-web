@@ -239,11 +239,22 @@ export interface HttpTransport {
 
 - **secret 永不持久化**：只存在内存；可选的 sessionStorage 仅保存 access key 与
   region，且默认关闭。e2e 会断言 sessionStorage 中不出现 secret。
-- **代理不额外鉴权**：能访问代理就能访问后端。默认只监听 `127.0.0.1`；部署到
-  其他地址时必须置于 TLS 与认证反向代理之后，且反向代理要保持 `Host`。
+- **入口鉴权**：默认只监听 `127.0.0.1` 并免鉴权；监听其他地址时必须配置
+  `BLINK_WEB_TOKEN`，否则拒绝启动。令牌通过 `POST /__login` 换取会话 Cookie
+  （`HttpOnly; SameSite=Lax`，HTTPS 时 `Secure`），会话是
+  `issued.expires.HMAC-SHA256` 的无状态值，签名密钥由令牌派生——轮换令牌即让所有
+  旧会话失效。令牌比较与签名校验均使用常量时间比较。未登录的页面导航跳登录页，
+  `/s3` 与资源请求返回 401。
+- **不做多用户**：令牌是共享口令，没有账号、权限分级、审计或失败速率限制；
+  它只解决"谁能进入测试台"，不替代 S3 凭据。
+- **TLS 终止在外部**：服务端不内置 TLS，依赖 Cloudflare 隧道或可信反向代理；
+  通过 `x-forwarded-proto: https` 识别 HTTPS 并下发 `Secure` Cookie 与 HSTS。
 - **响应头**：生产服务器下发 CSP（`default-src 'self'`、`connect-src 'self'`、
   `object-src 'none'`、`frame-ancestors 'none'`）、`nosniff`、`no-referrer`、
-  `X-Frame-Options: DENY`。
+  `X-Frame-Options: DENY`。登录页使用独立 CSP（`default-src 'none'`，仅允许内联
+  样式），不加载任何受保护的构建产物。
+- **Cookie 不透传**：代理剥离 `Cookie` / `Set-Cookie`，会话只停留在 Blink-web，
+  不会出现在后端日志或请求上下文里。
 - **日志**：代理只记录方法、路径、状态与耗时，不记录请求头，不记录
   `Authorization`。
 - **明文 HTTP**：凭据与正文可被同网段窃听；仅建议 localhost 或 TLS 终止之后使用。
