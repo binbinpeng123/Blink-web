@@ -346,3 +346,84 @@ test('登出清除 Cookie 并回到登录页', async () => {
     await f.close()
   }
 })
+
+test('登录失败超过阈值后返回 429 与 Retry-After，期间正确令牌也被拒绝', async () => {
+  const lines: string[] = []
+  const f = await fixture({
+    throttle: { maxFailures: 3, windowMs: 60_000, blockMs: 5_000 },
+    now: () => 1_000_000,
+    log: (line) => lines.push(line),
+  })
+  try {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const res = await postLogin(f.url, `wrong-token-${attempt}-0123456789abcdef`)
+      assert.equal(res.status, 303, `第 ${attempt} 次失败仍是普通登录失败`)
+      assert.equal(res.headers.get('location'), '/__login?error=1')
+    }
+
+    // 第 3 次失败即触发暂停：这一次也返回 429，而不是先 303 再暂停
+    const third = await postLogin(f.url, 'wrong-token-3-0123456789abcdef')
+    assert.equal(third.status, 429)
+    assert.equal(third.headers.get('retry-after'), '5')
+    assert.match(await third.text(), /尝试次数过多/)
+    assert.deepEqual(third.headers.getSetCookie(), [])
+
+    // 暂停期内即使令牌正确也拒绝，避免用 429 的有无做令牌炸弹检测
+    const correct = await postLogin(f.url, TOKEN)
+    assert.equal(correct.status, 429)
+    assert.deepEqual(correct.headers.getSetCookie(), [])
+
+    // 静态资源与 /s3 不受影响：限速只针对登录入口
+    const page = await fetch(`${f.url}/`, { redirect: 'manual', headers: { accept: 'text/html' } })
+    assert.equal(page.status, 303)
+
+    assert.ok(
+      lines.some((line) => line.includes('暂停')),
+      '触发限速时应记录一次日志',
+    )
+    assert.equal(
+      lines.filter((line) => line.includes('暂停')).length,
+      1,
+      '暂停只在产生时记录，不被后续请求刷屏',
+    )
+  } finally {
+    await f.close()
+  }
+})
+
+test('开启 trustProxy 后按 CF-Connecting-IP 隔离限速桶', async () => {
+  const f = await fixture({
+    trustProxy: true,
+    throttle: { maxFailures: 2, windowMs: 60_000, blockMs: 5_000 },
+  })
+  const wrong = 'nope-0123456789abcdef0123456789'
+  const attacker = { 'cf-connecting-ip': '198.51.100.7' }
+  const user = { 'cf-connecting-ip': '203.0.113.9' }
+  try {
+    // maxFailures=2：第 2 次失败即进入暂停
+    const first = await postLogin(f.url, wrong, { headers: attacker })
+    assert.equal(first.status, 303)
+    assert.equal((await postLogin(f.url, wrong, { headers: attacker })).status, 429)
+
+    const other = await postLogin(f.url, TOKEN, { headers: user })
+    assert.equal(other.status, 303)
+    assert.match(other.headers.getSetCookie()[0] ?? '', /^blink_web_session=/)
+  } finally {
+    await f.close()
+  }
+})
+
+test('未开启 trustProxy 时伪造 CF-Connecting-IP 拿不到独立配额', async () => {
+  const f = await fixture({ throttle: { maxFailures: 2, windowMs: 60_000, blockMs: 5_000 } })
+  const wrong = 'nope-0123456789abcdef0123456789'
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await postLogin(f.url, wrong, { headers: { 'cf-connecting-ip': `198.51.100.${attempt}` } })
+    }
+    const shared = await postLogin(f.url, TOKEN, { headers: { 'cf-connecting-ip': '203.0.113.9' } })
+    assert.equal(shared.status, 429, '不信任代理时所有请求都来自回环，共用一个限速桶')
+  } finally {
+    await f.close()
+  }
+})
+

@@ -248,8 +248,15 @@ export interface HttpTransport {
 - **同源凭据**：`FetchTransport` 固定 `credentials: 'same-origin'`。公网模式下
   `/s3` 与页面同源，浏览器必须带上会话 Cookie；设为 `'omit'` 会让门禁永远判定
   未登录。跨源端点仍不会收到 Cookie，Node 压测 CLI 也没有 Cookie 罐。
-- **不做多用户**：令牌是共享口令，没有账号、权限分级、审计或失败速率限制；
-  它只解决"谁能进入测试台"，不替代 S3 凭据。
+- **登录失败限速**（`server/throttle.ts`）：按来源做滑动窗口计数，60 秒内失败
+  5 次即暂停 30 秒，连续触发每次翻倍、封顶 5 分钟，期间登录入口返回
+  `429 + Retry-After`。暂停时连正确令牌也一并拒绝，避免把「429 的有无」变成
+  令牌是否接近正确的旁路。来源默认只取 TCP 对端；`BLINK_TRUST_PROXY=1` 且对端
+  是回环时才读 `CF-Connecting-IP`，再退到 `X-Forwarded-For` 最右项——服务直接
+  暴露公网时，任何人都能伪造这些头，所以默认关闭。
+- **不做多用户**：令牌是共享口令，没有账号、权限分级或审计记录；它只解决
+  「谁能进入测试台」，不替代 S3 凭据。限速按来源隔离，因此拿到令牌的人不受
+  影响，误伤范围仅限于试错者的来源地址。
 - **TLS 终止在外部**：服务端不内置 TLS，依赖 Cloudflare 隧道或可信反向代理；
   通过 `x-forwarded-proto: https` 识别 HTTPS 并下发 `Secure` Cookie 与 HSTS。
 - **响应头**：生产服务器下发 CSP（`default-src 'self'`、`connect-src 'self'`、
@@ -259,7 +266,8 @@ export interface HttpTransport {
 - **Cookie 不透传**：代理剥离 `Cookie` / `Set-Cookie`，会话只停留在 Blink-web，
   不会出现在后端日志或请求上下文里。
 - **日志**：代理只记录方法、路径、状态与耗时，不记录请求头，不记录
-  `Authorization`。
+  `Authorization`。登录相关日志只记来源地址（信任代理时为真实客户端地址），
+  不记录提交的令牌或 Cookie 值；限速触发只在暂停产生时记一行，避免被刷屏。
 - **明文 HTTP**：凭据与正文可被同网段窃听；仅建议 localhost 或 TLS 终止之后使用。
 
 ## 10. 可测试性

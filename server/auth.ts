@@ -1,5 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import {
+  createLoginThrottle,
+  resolveClientAddress,
+  type LoginThrottle,
+  type LoginThrottleOptions,
+} from './throttle.ts'
 
 /**
  * 公网模式的访问门禁。
@@ -10,7 +16,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
  * 1. 浏览器先 POST 访问令牌，服务端签发 HttpOnly 会话 Cookie；
  * 2. 之后所有静态资源与 `/s3` 请求都必须带有效 Cookie；
  * 3. Cookie 是 HMAC 签名的时间戳，令牌本身既不下发也不写入任何存储；
- * 4. 令牌比较与签名校验都用常量时间，避免时序侧信道。
+ * 4. 令牌比较与签名校验都用常量时间，避免时序侧信道；
+ * 5. 登录失败按来源做滑动窗口计数，超阈值后短暂暂停（见 throttle.ts）。
  *
  * 不用 HTTP Basic：S3 请求自己的 `Authorization` 头是 SigV4 签名，会被
  * Basic 凭据覆盖，二者不能共用同一个头。
@@ -32,6 +39,10 @@ export interface SessionAuthOptions {
   /** 仅测试注入，默认 Date.now */
   now?: () => number
   log?: (line: string) => void
+  /** 登录失败限速参数；省略时使用 throttle.ts 的默认值 */
+  throttle?: LoginThrottleOptions
+  /** 是否信任 CF-Connecting-IP / X-Forwarded-For（仅在反向代理之后开启） */
+  trustProxy?: boolean
 }
 
 export interface SessionAuth {
@@ -64,6 +75,15 @@ export function createSessionAuth(options: SessionAuthOptions): SessionAuth {
   const key = createHmac('sha256', options.token).update('blink-web-session-v1').digest()
   const tokenDigest = createHash('sha256').update(options.token).digest()
   const log = options.log ?? (() => {})
+  const trustProxy = options.trustProxy ?? false
+  const throttle: LoginThrottle = createLoginThrottle({
+    ...options.throttle,
+    now,
+    log,
+  })
+
+  /** 限速与日志用的来源；信任代理时取隧道/反代传下来的真实地址。 */
+  const clientAddress = (req: IncomingMessage): string => resolveClientAddress(req, { trustProxy })
 
   function sign(payload: string): string {
     return createHmac('sha256', key).update(payload).digest('base64url')
@@ -162,6 +182,13 @@ export function createSessionAuth(options: SessionAuthOptions): SessionAuth {
       return
     }
 
+    // 来源被暂停时直接拒绝，连请求体都不读，避免为其分配内存。
+    const blocked = throttle.retryAfterMs(clientAddress(req))
+    if (blocked > 0) {
+      respondThrottled(req, res, blocked)
+      return
+    }
+
     const chunks: Buffer[] = []
     let size = 0
     let rejected = false
@@ -182,15 +209,28 @@ export function createSessionAuth(options: SessionAuthOptions): SessionAuth {
       if (rejected || res.headersSent) return
       const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'))
       const supplied = form.get('token') ?? ''
-      if (!safeEqual(createHash('sha256').update(supplied).digest(), tokenDigest)) {
-        const next = nextFrom(search, form.get('next'))
-        const location = `${LOGIN_PATH}?error=1${next ? `&next=${encodeURIComponent(next)}` : ''}`
-        log(`登录失败（${req.socket.remoteAddress ?? 'unknown'}）`)
+      const client = clientAddress(req)
+      const correct = safeEqual(createHash('sha256').update(supplied).digest(), tokenDigest)
+      const next = nextFrom(search, form.get('next'))
+      const location = `${LOGIN_PATH}?error=1${next ? `&next=${encodeURIComponent(next)}` : ''}`
+
+      if (!correct) {
+        throttle.recordFailure(client)
+        const retryAfterMs = throttle.retryAfterMs(client)
+        if (retryAfterMs > 0) {
+          // 暂停期间连「令牌对不对」都不再区分：快速返回 429，避免继续消耗算力。
+          log(`登录失败（${client}）：已达限速阈值，${Math.ceil(retryAfterMs / 1000)} 秒后可再试`)
+          tooManyAttempts(res, retryAfterMs)
+          return
+        }
+        log(`登录失败（${client}）`)
         redirect(res, location, 303)
         return
       }
+
+      throttle.recordSuccess(client)
       setSessionCookie(req, res)
-      log(`登录成功（${req.socket.remoteAddress ?? 'unknown'}）`)
+      log(`登录成功（${client}）`)
       redirect(res, safeNext(form.get('next')) ?? '/', 303)
     })
   }
@@ -198,6 +238,13 @@ export function createSessionAuth(options: SessionAuthOptions): SessionAuth {
   function nextFrom(search: string, formValue?: string | null): string | undefined {
     const fromQuery = new URLSearchParams(search).get('next')
     return safeNext(formValue) ?? safeNext(fromQuery)
+  }
+
+  /** 被限速的 POST：不缓冲请求体，直接 429，并让连接在用完后关闭。 */
+  function respondThrottled(req: IncomingMessage, res: ServerResponse, retryAfterMs: number): void {
+    log(`登录被限速（${clientAddress(req)}）：${Math.ceil(retryAfterMs / 1000)} 秒后可再试`)
+    req.resume()
+    tooManyAttempts(res, retryAfterMs)
   }
 
   function sendLoginPage(
@@ -220,6 +267,27 @@ export function createSessionAuth(options: SessionAuthOptions): SessionAuth {
         "base-uri 'none'; frame-ancestors 'none'",
     })
     res.end(req.method === 'HEAD' ? undefined : body)
+  }
+
+  /**
+   * 429。刻意不渲染登录表单：被限速时再给一个可以继续提交的表单，只会让
+   * 用户反复触发限速；纯文本 + `Retry-After` 表达的信息已经足够。
+   */
+  function tooManyAttempts(res: ServerResponse, retryAfterMs: number): void {
+    const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000))
+    const body = `尝试次数过多，请 ${seconds} 秒后再试。`
+    if (res.headersSent) {
+      res.destroy()
+      return
+    }
+    res.writeHead(429, {
+      'content-type': 'text/plain; charset=utf-8',
+      'content-length': String(Buffer.byteLength(body)),
+      'cache-control': 'no-store',
+      'retry-after': String(seconds),
+      'x-content-type-options': 'nosniff',
+    })
+    res.end(body)
   }
 
   return { handle, isAuthenticated, isSecure }

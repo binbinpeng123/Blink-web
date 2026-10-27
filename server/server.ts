@@ -5,6 +5,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertTokenStrength, createSessionAuth, isLoopbackHost } from './auth.ts'
 import { createS3Proxy } from './proxy.ts'
+import type { LoginThrottleOptions } from './throttle.ts'
 
 /**
  * 生产服务器：托管 dist 静态文件 + 同源 /s3 代理。
@@ -49,6 +50,10 @@ export interface ServerOptions {
   token?: string
   /** 会话有效期，默认 24 小时 */
   sessionHours?: number
+  /** 信任 CF-Connecting-IP / X-Forwarded-For，只在 Cloudflare 隧道或反向代理之后开启 */
+  trustProxy?: boolean
+  /** 登录失败限速参数；省略时用默认值（5 次 / 60 秒，暂停 30 秒起） */
+  throttle?: LoginThrottleOptions
   /** 仅测试注入的时钟，默认 Date.now */
   now?: () => number
   log?: (line: string) => void
@@ -63,6 +68,7 @@ export function createBlinkServer(options: ServerOptions = {}) {
   const port = options.port ?? Number(process.env['PORT'] ?? 8080)
   const sessionHours = options.sessionHours ?? numberFromEnv('BLINK_WEB_SESSION_HOURS', 24)
   const token = options.token ?? process.env['BLINK_WEB_TOKEN'] ?? ''
+  const trustProxy = options.trustProxy ?? process.env['BLINK_TRUST_PROXY'] === '1'
 
   if (token) {
     assertTokenStrength(token)
@@ -79,6 +85,8 @@ export function createBlinkServer(options: ServerOptions = {}) {
         token,
         sessionHours,
         now: options.now,
+        trustProxy,
+        throttle: options.throttle,
         log: (line) => log(`[auth] ${line}`),
       })
     : undefined
