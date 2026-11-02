@@ -3,11 +3,13 @@ import { stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertTokenStrength, createSessionAuth, isLoopbackHost } from './auth.ts'
 import { createS3Proxy } from './proxy.ts'
 
 /**
  * 生产服务器：托管 dist 静态文件 + 同源 /s3 代理。
- * 零依赖；默认只监听 127.0.0.1 —— 代理本身不鉴权，绝不能直接暴露公网。
+ * 零依赖；默认只监听 127.0.0.1。非回环监听必须配置 BLINK_WEB_TOKEN，
+ * 此时所有静态资源与 /s3 都要经过会话 Cookie 鉴权（见 auth.ts）。
  */
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -43,6 +45,12 @@ export interface ServerOptions {
   port?: number
   dist?: string
   insecureTls?: boolean
+  /** 公网访问令牌；配置后启用登录页与会话 Cookie */
+  token?: string
+  /** 会话有效期，默认 24 小时 */
+  sessionHours?: number
+  /** 仅测试注入的时钟，默认 Date.now */
+  now?: () => number
   log?: (line: string) => void
 }
 
@@ -51,10 +59,46 @@ export function createBlinkServer(options: ServerOptions = {}) {
   const dist = resolve(options.dist ?? DIST)
   const log = options.log ?? console.log
   const insecureTls = options.insecureTls ?? process.env['BLINK_TLS_INSECURE'] === '1'
+  const host = options.host ?? process.env['HOST'] ?? '127.0.0.1'
+  const port = options.port ?? Number(process.env['PORT'] ?? 8080)
+  const sessionHours = options.sessionHours ?? numberFromEnv('BLINK_WEB_SESSION_HOURS', 24)
+  const token = options.token ?? process.env['BLINK_WEB_TOKEN'] ?? ''
+
+  if (token) {
+    assertTokenStrength(token)
+  } else if (!isLoopbackHost(host)) {
+    // 非回环监听却没有令牌 = 任何人都能以代理身份访问 Blink（含凭据签名接口）。
+    throw new Error(
+      `监听 ${host} 时必须设置 BLINK_WEB_TOKEN（至少 32 字符，可用 openssl rand -base64 32 生成）；` +
+        '只有回环地址允许无鉴权运行。',
+    )
+  }
+
+  const auth = token
+    ? createSessionAuth({
+        token,
+        sessionHours,
+        now: options.now,
+        log: (line) => log(`[auth] ${line}`),
+      })
+    : undefined
 
   const proxy = createS3Proxy({ endpoint, insecureTls, log })
 
   const server = createServer((req, res) => {
+    // 前端用它判断是否显示「退出登录」；不泄露任何配置内容。
+    if (isAuthzPath(req)) {
+      respondAuthz(req, res, Boolean(auth))
+      return
+    }
+    if (auth) {
+      // Cloudflare / TLS 反向代理已终止 TLS 时，浏览器到边缘这一段必须强制 HTTPS。
+      // 回环明文调试不会带这个头，因此不会把 127.0.0.1 钉死到 HTTPS。
+      if (auth.isSecure(req)) {
+        res.setHeader('strict-transport-security', 'max-age=31536000')
+      }
+      if (auth.handle(req, res)) return
+    }
     if (isProxyPath(req)) {
       proxy(req, res, () => notFound(res))
       return
@@ -67,9 +111,6 @@ export function createBlinkServer(options: ServerOptions = {}) {
   // 上传/下载可能持续数分钟，Node 默认 300s 的 requestTimeout 会误杀。
   server.requestTimeout = 0
   server.headersTimeout = 60_000
-
-  const host = options.host ?? process.env['HOST'] ?? '127.0.0.1'
-  const port = options.port ?? Number(process.env['PORT'] ?? 8080)
 
   return {
     server,
@@ -97,6 +138,37 @@ export function createBlinkServer(options: ServerOptions = {}) {
 function isProxyPath(req: IncomingMessage): boolean {
   const url = req.url ?? ''
   return url === '/s3' || url.startsWith('/s3/') || url.startsWith('/s3?')
+}
+
+function isAuthzPath(req: IncomingMessage): boolean {
+  const url = req.url ?? ''
+  return url === '/__authz' || url.startsWith('/__authz?')
+}
+
+function respondAuthz(req: IncomingMessage, res: ServerResponse, required: boolean): void {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { allow: 'GET, HEAD', 'cache-control': 'no-store' })
+    res.end()
+    return
+  }
+  const body = JSON.stringify({ required })
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(Buffer.byteLength(body)),
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  })
+  res.end(req.method === 'HEAD' ? undefined : body)
+}
+
+function numberFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} 必须是正数，实际：${raw}`)
+  }
+  return value
 }
 
 async function serveStatic(req: IncomingMessage, res: ServerResponse, dist: string): Promise<void> {
@@ -188,7 +260,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   app
     .listen()
     .then(({ url }) => {
-      console.log(`Blink-web 已启动：${url}（代理目标 ${process.env['BLINK_ENDPOINT'] ?? 'http://127.0.0.1:9000'}）`)
+      const mode = process.env['BLINK_WEB_TOKEN'] ? '令牌登录' : '回环免鉴权'
+      console.log(
+        `Blink-web 已启动：${url}（${mode}；代理目标 ${process.env['BLINK_ENDPOINT'] ?? 'http://127.0.0.1:9000'}）`,
+      )
     })
     .catch((error: unknown) => {
       console.error(`启动失败：${error instanceof Error ? error.message : String(error)}`)
