@@ -72,8 +72,10 @@ BLINK_ENDPOINT=http://127.0.0.1:9000 HOST=127.0.0.1 PORT=8080 npm start
 openssl rand -base64 32
 
 # 2) 启动服务端（监听回环，由隧道暴露）
+#    BLINK_TRUST_PROXY=1 让登录日志与限速看到真实客户端地址，而不是 127.0.0.1
 BLINK_ENDPOINT=http://127.0.0.1:9000 \
 BLINK_WEB_TOKEN='<上一步的令牌>' \
+BLINK_TRUST_PROXY=1 \
 HOST=127.0.0.1 PORT=8080 npm start
 
 # 3) 另一终端：Cloudflare 临时隧道（需要本机能访问互联网）
@@ -94,8 +96,12 @@ cloudflared tunnel --url http://127.0.0.1:8080 --no-autoupdate
   端到端加密）；携带真实数据前请自行评估合规要求。
 - 会话默认 24 小时（`BLINK_WEB_SESSION_HOURS`）。Cookie 为
   `HttpOnly; SameSite=Lax`，HTTPS 下自动加 `Secure`；服务端同时下发 HSTS。
-- 令牌是**共享口令**，不区分用户、没有审计与速率限制；令牌泄露等于测试台完全
-  失守。更换 `BLINK_WEB_TOKEN` 并重启会让所有旧 Cookie 立即失效。
+- 令牌是**共享口令**，不区分用户、没有审计记录；令牌泄露等于测试台完全失守。
+  更换 `BLINK_WEB_TOKEN` 并重启会让所有旧 Cookie 立即失效。
+- 登录失败会按来源限速：60 秒内 5 次错误后暂停 30 秒（连续触发翻倍，封顶
+  5 分钟），期间返回 `429`。**经隧道 / 反向代理部署时请设置
+  `BLINK_TRUST_PROXY=1`**，否则服务看到的所有来源都是 `127.0.0.1`，一个人试错
+  会锁住全部访问者；服务直接监听公网时不要开启（代理头可被伪造）。
 
 ### 5. 前后端都在远程开发机时
 
@@ -127,6 +133,7 @@ cloudflared tunnel --url http://127.0.0.1:8080 --no-autoupdate
 | `BLINK_TLS_INSECURE` | `1` 时接受自签证书，仅限本机后端 | 关闭 |
 | `BLINK_WEB_TOKEN` | 访问令牌（≥32 字符）；设置后启用登录页，非回环监听时必填 | 空（仅回环免鉴权） |
 | `BLINK_WEB_SESSION_HOURS` | 登录会话有效期（小时） | `24` |
+| `BLINK_TRUST_PROXY` | `1` 时信任 `CF-Connecting-IP` / `X-Forwarded-For`（仅隧道或反代之后开启） | 关闭 |
 | `CHROME_PATH` | e2e 使用的 Chrome 可执行文件 | macOS 默认安装路径 |
 
 压测 CLI 另用 `BLINK_ACCESS_KEY` / `BLINK_SECRET_KEY`（必填）、`BLINK_REGION`
@@ -138,7 +145,7 @@ cloudflared tunnel --url http://127.0.0.1:8080 --no-autoupdate
   不要直接把该端口暴露到公网。
 - **公网模式强制令牌**：配置 `BLINK_WEB_TOKEN` 后，静态资源、`/s3` 与登录后的所有
   请求都要带有效会话 Cookie；未登录导航跳 `/__login`，其余请求返回 401。监听非
-  回环地址却没有令牌时服务直接拒绝启动。
+  回环地址却没有令牌时服务直接拒绝启动。登录失败有限速（见上文）。
 - 令牌只用于进门禁，**不能替代 S3 凭据**：访问者仍需自己填写 access key / secret
   才能在浏览器里签名。服务端不保存任何 S3 凭据。
 - 会话是无状态 HMAC Cookie，登出只清除浏览器里的 Cookie；在被盗用的情况下，

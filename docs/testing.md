@@ -45,7 +45,7 @@
 | 层 | 覆盖内容 | 命令 | 本次结果 |
 | --- | --- | --- | --- |
 | 类型 | `strict` + `noUncheckedIndexedAccess` | `npm run typecheck` | 通过 |
-| 单元 | SigV4 官方向量、URI/query 编码、XML 解析、分片规划、重试与取消、压测预算与统计、key 校验、列表解码；公网模式（未登录拦截、登录/登出、Cookie 签名与过期、Secure/HSTS、`next` 白名单、Cookie 不透传后端、非回环无令牌拒绝启动） | `npm test` | 97 通过 |
+| 单元 | SigV4 官方向量、URI/query 编码、XML 解析、分片规划、重试与取消、压测预算与统计、key 校验、列表解码；公网模式（未登录拦截、登录/登出、Cookie 签名与过期、Secure/HSTS、`next` 白名单、Cookie 不透传后端、非回环无令牌拒绝启动）；登录限速（滑动窗口、指数翻倍与封顶、来源隔离、成功清零、条目上限淘汰、代理头信任规则） | `npm test` | 113 通过 |
 | 集成 | 启动真实 Blink（临时数据目录、假凭据）：建桶/列表/删桶、代理 Host 与路径不变式、S3 错误码、12 MiB 分片上传往返 SHA-256、Range 下载 SHA-256、`If-Match` 防替换、取消分片不留对象 | `npm run test:integration` | 8 通过 |
 | e2e | Puppeteer 驱动真实 Chrome，覆盖完整 UI 流程；下载覆盖两个入口（对象行、点对象名后的详情弹窗）与两条写盘路径（OPFS 注入模拟 FileSink 流式写盘、Blob 回退经 CDP 捕获），内容均比对 SHA-256；断言 sessionStorage 不含 secret；浏览器压测面板跑通并自动清理 | `npm run test:e2e` | 通过 |
 
@@ -320,6 +320,13 @@ GET 峰值约 699 MiB/s）。
 - **Cloudflare → 中继直连 POST 挂起**：隧道直接指向 5173 中的中继时，`POST /__login`
   120 s 无响应（cloudflared 记录 `context canceled`），判断为 h2c 与逐连接中继的
   组合问题。改为隧道指向本机生产服务器、只有 `/s3` 走中继后正常。
+- **登录无失败限制**：初始实现只对令牌做常量时间比较，失败可无限重试；且
+  cloudflared 不向下游传客户端地址，所有请求在服务端都是 `127.0.0.1`，无法限速
+  也无法溯源。新增 `server/throttle.ts`（按来源滑动窗口 + 指数退避）与
+  `BLINK_TRUST_PROXY=1`（回环对端下读取 `CF-Connecting-IP`）。实测：第 3 次
+  错误令牌即返回 `429 + Retry-After: 5`，暂停期内正确令牌同样被拒；另一来源
+  的正确令牌不受影响。未开启信任代理时伪造 `CF-Connecting-IP` 不产生独立配额。
+  本次为脚本级验证（临时服务端 + 注入时钟），未再次经公网隧道复测。
 
 ### 10.5 复现方式
 
@@ -329,6 +336,7 @@ GET 峰值约 699 MiB/s）。
 # 1. 后端（任意可达地址，这里经中继）
 # 2. 前端生产服务器（必须显式提供 ≥32 字符令牌）
 BLINK_WEB_TOKEN="$(openssl rand -base64 32)" \
+BLINK_TRUST_PROXY=1 \
 BLINK_ENDPOINT=http://127.0.0.1:9000 \
 HOST=127.0.0.1 PORT=8080 node server/server.ts
 
